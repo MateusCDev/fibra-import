@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2"><Document><name>Rede fictícia · Candeias</name><description>Dados fictícios para demonstração do conversor.</description>
+<Folder><name>POPs</name><Placemark><name>POP-CENTRO</name><Point><coordinates>-38.5535,-12.6705,0</coordinates></Point></Placemark></Folder>
+<Folder><name>Caixas CTO</name>
+<Placemark><name>CTO-001</name><description>Caixa demonstrativa. Revise o tipo e template no seu OZmap.</description><Point><coordinates>-38.5522,-12.6712,0</coordinates></Point></Placemark>
+<Placemark><name>CTO-002</name><Point><coordinates>-38.5508,-12.6720,0</coordinates></Point></Placemark>
+<Placemark><name>CTO-003</name><Point><coordinates>-38.5519,-12.6730,0</coordinates></Point></Placemark>
+<Placemark><name>CTO-004</name><Point><coordinates>-38.5533,-12.6724,0</coordinates></Point></Placemark>
+</Folder><Folder><name>Postes</name>
+<Placemark><name>P-001</name><Point><coordinates>-38.5535,-12.6705,0</coordinates></Point></Placemark>
+<Placemark><name>P-002</name><Point><coordinates>-38.5528,-12.6709,0</coordinates></Point></Placemark>
+<Placemark><name>P-003</name><Point><coordinates>-38.5522,-12.6712,0</coordinates></Point></Placemark>
+<Placemark><name>P-004</name><Point><coordinates>-38.5515,-12.6716,0</coordinates></Point></Placemark>
+<Placemark><name>P-005</name><Point><coordinates>-38.5508,-12.6720,0</coordinates></Point></Placemark>
+<Placemark><name>P-006</name><Point><coordinates>-38.5514,-12.6725,0</coordinates></Point></Placemark>
+<Placemark><name>P-007</name><Point><coordinates>-38.5519,-12.6730,0</coordinates></Point></Placemark>
+<Placemark><name>P-008</name><Point><coordinates>-38.5533,-12.6724,0</coordinates></Point></Placemark>
+</Folder><Folder><name>Cabos</name>
+<Placemark><name>CB-001</name><ExtendedData><Data name="first point"><value>POP-CENTRO</value></Data><Data name="second point"><value>CTO-001</value></Data></ExtendedData><LineString><coordinates>-38.5535,-12.6705,0 -38.5528,-12.6709,0 -38.5522,-12.6712,0</coordinates></LineString></Placemark>
+<Placemark><name>CB-002</name><LineString><coordinates>-38.5522,-12.6712,0 -38.5515,-12.6716,0 -38.5508,-12.6720,0</coordinates></LineString></Placemark>
+<Placemark><name>CB-003</name><LineString><coordinates>-38.5508,-12.6720,0 -38.5514,-12.6725,0 -38.5519,-12.6730,0</coordinates></LineString></Placemark>
+<Placemark><name>CB-004</name><LineString><coordinates>-38.5519,-12.6730,0 -38.5526,-12.6727,0 -38.5533,-12.6724,0</coordinates></LineString></Placemark>
+</Folder><Folder><name>A conferir</name><Placemark><name>Ponto sem identificação</name><Point><coordinates>-38.5527,-12.6733,0</coordinates></Point></Placemark></Folder>
+</Document></kml>
