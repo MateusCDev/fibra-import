@@ -1,50 +1,837 @@
-'use strict';
-const $=id=>document.getElementById(id),F=Fibra;let entries=[],warnings=[],files=[],settings={cableType:'',cableLevel:'',ductType:'',boxLevel:'',reviewed:false},filter='all',page=0,selected=new Set(),map,layer,editorId,busy=false,toastTimer;
-const colors={cabos:'#368869',caixas:'#d09840',postes:'#7487ad',passagem:'#ac8058',pops:'#496e4b',clientes:'#809e57',prospects:'#a47dac',dutos:'#a8795a',regioes:'#829c77',reservas:'#b884b2',unknown:'#b87872'};
-try{settings={...settings,...JSON.parse(localStorage.getItem('fibra-settings')||'{}')}}catch{}
-const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-function toast(message){$('toast').textContent=message;$('toast').classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').classList.remove('show'),5000)}
-function openDialog(id){$(id).showModal()}
-document.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>b.closest('dialog').close());document.querySelectorAll('dialog').forEach(d=>d.addEventListener('click',e=>{if(e.target===d){const r=d.getBoundingClientRect();if(e.clientX<r.left||e.clientX>r.right||e.clientY<r.top||e.clientY>r.bottom)d.close()}}));
-$('helpBtn').onclick=$('navHelp').onclick=()=>openDialog('helpDialog');
-function showSettings(){for(const [id,key]of [['settingCableType','cableType'],['settingCableLevel','cableLevel'],['settingDuctType','ductType'],['settingBoxLevel','boxLevel']])$(id).value=settings[key];$('settingReviewed').checked=settings.reviewed;openDialog('settingsDialog')}
-$('navSettings').onclick=$('settingsInline').onclick=showSettings;$('saveSettings').onclick=()=>{settings={cableType:$('settingCableType').value.trim(),cableLevel:$('settingCableLevel').value.trim(),ductType:$('settingDuctType').value.trim(),boxLevel:$('settingBoxLevel').value.trim(),reviewed:$('settingReviewed').checked};try{localStorage.setItem('fibra-settings',JSON.stringify(settings))}catch{}$('settingsDialog').close();render();toast('Padrões salvos neste navegador.')};
-function options(select,all=false){select.innerHTML=(all?'<option value="all">Todos</option>':'')+Object.entries(F.CATEGORIES).map(([k,v])=>`<option value="${k}">${v}</option>`).join('')}
-options($('bulkCategory'));options($('editCategory'));
-async function readFiles(list){if(busy)return;busy=true;const added=[];const newWarnings=[];const names=[];try{for(const file of Array.from(list)){if(!/\.(kmz|kml)$/i.test(file.name)){newWarnings.push(file.name+': formato não suportado. Use KML ou KMZ.');continue}if(file.size>25*1024*1024){newWarnings.push(file.name+': excede o limite de 25 MB.');continue}try{const docs=[];if(/\.kmz$/i.test(file.name)){const zip=await JSZip.loadAsync(file);const content=Object.values(zip.files).filter(e=>!e.dir&&/\.kml$/i.test(e.name));if(content.length===0)throw new Error('O KMZ não contém arquivos KML.');if(content.length>100)throw new Error('Limite de 100 KMLs por KMZ.');let total=0;for(const part of content){const size=part._data?.uncompressedSize;if(!Number.isFinite(size)||size>50*1024*1024||total+size>50*1024*1024)throw new Error('O KMZ excede o limite de 50 MB descompactado.');total+=size;const text=await part.async('string');docs.push({xml:text,source:file.name+' / '+part.name})}if(Object.values(zip.files).some(e=>!e.dir&&!/\.kml$/i.test(e.name)))newWarnings.push(file.name+': fotos e anexos internos não foram exportados.')}else docs.push({xml:await file.text(),source:file.name});const current=[];for(const doc of docs){const result=F.parseKML(doc.xml,doc.source);current.push(...result.entries);newWarnings.push(...result.warnings)}if(entries.length+added.length+current.length>15000)throw new Error('Limite de 15.000 elementos por conversão.');added.push(...current);names.push(file.name);if(!current.length)newWarnings.push(file.name+': nenhum elemento suportado encontrado.')}catch(e){newWarnings.push(file.name+': '+e.message)}}
- if(added.length){const run=Date.now().toString(36)+Math.random().toString(36).slice(2,6);added.forEach((e,i)=>e.id=run+'-'+i);entries.push(...added);files.push(...names);warnings.push(...newWarnings);filter='all';page=0;showReview();render();drawMap(true);toast(added.length+' elementos carregados. Confira a classificação e os campos.')}else{warnings.push(...newWarnings);toast(newWarnings[0]||'Nenhum elemento encontrado.');if(entries.length)render();else showUploadErrors(newWarnings)}}finally{busy=false;$('fileInput').value=''}}
-function showUploadErrors(items){let el=$('uploadErrors');if(!el){el=document.createElement('div');el.id='uploadErrors';el.className='notice';$('dropzone').after(el)}el.textContent=items.join('\n')}
-$('fileInput').onchange=e=>readFiles(e.target.files);const drop=$('dropzone');drop.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();$('fileInput').click()}};for(const ev of ['dragenter','dragover'])drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.add('drag')});for(const ev of ['dragleave','drop'])drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.remove('drag')});drop.addEventListener('drop',e=>readFiles(e.dataTransfer.files));$('addBtn').onclick=()=>$('fileInput').click();
-function reset(){if(entries.length&&!confirm('Iniciar nova conversão? Baixe o pacote ou relatório antes de descartar esta sessão.'))return;entries=[];warnings=[];files=[];selected.clear();$('reviewView').hidden=true;$('uploadView').hidden=false;$('step1').className='current';$('step2').className='';$('step3').className='';NetworkMap.clear();$('search').value='';$('onlyPending').checked=false;filter='all';page=0}
-$('newBtn').onclick=$('navImport').onclick=reset;
-function showReview(){$('uploadView').hidden=true;$('reviewView').hidden=false;$('step1').className='done';$('step2').className='current';$('step3').className='';$('projectName').textContent=files.length===1?files[0].replace(/\.(kmz|kml)$/i,''):'Minha rede · '+files.length+' arquivos';$('fileSummary').textContent=files.join(' · ');updateFolders()}
-function updateFolders(){const current=$('folderFilter').value;$('folderFilter').innerHTML='<option value="">Todas as pastas</option>'+Array.from(new Set(entries.map(e=>e.folder))).sort().map(f=>`<option value="${esc(f||'__root')}">${esc(f||'Sem pasta')}</option>`).join('');$('folderFilter').value=current}
-function visibleData(){const search=F.norm($('search').value),folder=$('folderFilter').value;return F.validate(entries,settings).filter(e=>(filter==='all'||e.category===filter)&&(!$('onlyPending').checked||(!e.ready&&!e.excluded))&&(!folder||(e.folder||'__root')===folder)&&(!search||F.norm(e.name+' '+e.folder+' '+e.source).includes(search)))}
-function render(){if(!entries.length)return;const data=F.validate(entries,settings),ready=data.filter(e=>e.ready),pending=data.filter(e=>!e.ready&&!e.excluded),counts={};for(const e of data)counts[e.category]=(counts[e.category]||0)+1;
- const cableLength=data.filter(e=>e.category==='cabos').reduce((a,e)=>a+F.lengthMeters(e.coords),0);$('stats').innerHTML=[['all','Elementos encontrados',data.length],['cabos','Cabos · '+(cableLength/1000).toLocaleString('pt-BR',{maximumFractionDigits:2})+' km',counts.cabos||0],['caixas','Caixas',counts.caixas||0],['postes','Postes',counts.postes||0],['pending','Com pendências',pending.length]].map(([key,label,value])=>`<button class="stat" data-stat="${key}"><small>${label}</small><strong>${value}</strong></button>`).join('');$('stats').querySelectorAll('button').forEach(b=>b.onclick=()=>{filter=b.dataset.stat==='pending'?'all':b.dataset.stat;$('onlyPending').checked=b.dataset.stat==='pending';page=0;render();$('tableCount').scrollIntoView({behavior:'smooth',block:'center'})});
- $('readyCount').innerHTML=ready.length+'<span> / '+data.filter(e=>!e.excluded).length+'</span>';$('readyBar').style.width=(100*ready.length/Math.max(1,data.filter(e=>!e.excluded).length))+'%';$('readyText').textContent=pending.length?pending.length+' elementos precisam de ajustes. Clique na linha para revisar.':'Tudo conferido nesta sessão. Revise os cadastros no seu OZmap.';$('tableCount').textContent=data.length;
- $('categoryTabs').innerHTML=[['all','Todos',data.length],...Object.keys(F.CATEGORIES).filter(k=>counts[k]).map(k=>[k,F.CATEGORIES[k],counts[k]])].map(([key,label,n])=>`<button data-cat="${key}" class="${filter===key?'active':''}">${label} <span>${n}</span></button>`).join('');$('categoryTabs').querySelectorAll('button').forEach(b=>b.onclick=()=>{filter=b.dataset.cat;page=0;render()});renderRows();$('importWarnings').innerHTML=warnings.length?`<details><summary>${warnings.length} avisos de leitura · Ver detalhes</summary><ul>${warnings.map(w=>'<li>'+esc(w)+'</li>').join('')}</ul></details>`:'';}
-function renderRows(){const rows=visibleData();page=Math.max(0,Math.min(page,Math.max(0,Math.ceil(rows.length/40)-1)));const shown=rows.slice(page*40,(page+1)*40);$('rows').innerHTML=shown.length?shown.map(e=>`<tr data-id="${esc(e.id)}"><td><input class="row-check" type="checkbox" ${selected.has(e.id)?'checked':''} aria-label="Selecionar ${esc(e.name)}"></td><td><div class="element-name">${esc(e.name)}</div><div class="element-sub">${e.geometry==='Point'?'Ponto':e.geometry==='LineString'?'Linha · '+Math.round(F.lengthMeters(e.coords))+' m':'Polígono'}${e.confirmed?'':' · conferir classificação'}</div></td><td><span class="badge" style="border-left:2px solid ${colors[e.category]}">${F.CATEGORIES[e.category]}</span></td><td class="cell-origin" title="${esc(e.source+' / '+e.folder)}">${esc(e.folder||e.source)}</td><td>${esc(e.type||'—')}<div class="element-sub">${esc(e.level||'—')}</div></td><td><span class="badge ${e.excluded?'excluded':e.ready?'':'pending'}" title="${esc([...e.issues,...(e.advice||[])].join(' · '))}">${e.excluded?'Excluído':e.ready?(e.advice?.length?'✓ Pronto · conferir aviso':'✓ Pronto'):'◷ '+e.issues.length+' pendência(s)'}</span></td><td><button class="text-button edit-row" aria-label="Editar ${esc(e.name)}">↗</button></td></tr>`).join(''):'<tr><td colspan="7" class="no-data">Nenhum elemento neste filtro.</td></tr>';
- $('rows').querySelectorAll('tr[data-id]').forEach(tr=>{tr.onclick=e=>{if(e.target.closest('.row-check')){if(e.target.checked)selected.add(tr.dataset.id);else selected.delete(tr.dataset.id);updateSelected();return}openEditor(tr.dataset.id)}});$('pageInfo').textContent=rows.length?`${page*40+1}–${Math.min(rows.length,(page+1)*40)} de ${rows.length} elementos`:'0 elementos';$('prevPage').disabled=page===0;$('nextPage').disabled=(page+1)*40>=rows.length;$('selectAll').checked=shown.length>0&&shown.every(e=>selected.has(e.id));updateSelected();}
-function updateSelected(){$('bulkCount').textContent=selected.size+' selecionado(s)';$('bulkBtn').disabled=selected.size===0}
-$('selectAll').onchange=e=>{visibleData().slice(page*40,(page+1)*40).forEach(row=>{if(e.target.checked)selected.add(row.id);else selected.delete(row.id)});renderRows()};$('prevPage').onclick=()=>{page--;renderRows()};$('nextPage').onclick=()=>{page++;renderRows()};$('search').oninput=$('folderFilter').onchange=$('onlyPending').onchange=()=>{page=0;renderRows()};$('pendingBtn').onclick=()=>{filter='all';$('onlyPending').checked=true;page=0;render();$('tableCount').scrollIntoView({behavior:'smooth',block:'center'})};
-$('bulkBtn').onclick=()=>{const category=$('bulkCategory').value;let total=0,skipped=0;entries.forEach(e=>{if(!selected.has(e.id))return;const expected=['cabos','dutos'].includes(category)?'LineString':category==='regioes'?'Polygon':'Point';if(category!=='unknown'&&e.geometry!==expected){skipped++;return}e.category=category;e.confirmed=category!=='unknown';total++});selected.clear();render();drawMap();toast(total+' elementos classificados.'+(skipped?' '+skipped+' ignorados por geometria incompatível.':''))};
-function drawMap(fit=false){NetworkMap.draw(entries,colors,openEditor,fit)}
-$('fitBtn').onclick=()=>NetworkMap.fit();
-$('earthKmlBtn').onclick=()=>{const result=NetworkMap.toKML(entries);if(!result.count){toast('Não há geometrias válidas para exportar.');return}download(result.xml,'rede-revisada.kml','application/vnd.google-earth.kml+xml;charset=utf-8');toast('KML gerado com '+result.count+' elementos.'+(result.skipped?' '+result.skipped+' geometrias inválidas ou com ilhas foram omitidas.':'')+' Importe o arquivo no Google Earth.');};
-function openEditor(id){const e=entries.find(e=>e.id===id);if(!e)return;editorId=id;$('editorTitle').textContent=e.name;for(const [key,field]of Object.entries({name:'editName',category:'editCategory',type:'editType',level:'editLevel',template:'editTemplate',status:'editStatus',comments:'editComments',code:'editCode',box:'editBox',pole:'editPole',address:'editAddress',reserve:'editReserve',cable:'editCable'}))$(field).value=e[key]||'';$('editConfirmed').checked=e.confirmed;$('editExcluded').checked=e.excluded;$('pointFields').hidden=e.geometry!=='Point';$('reserveFields').hidden=e.category!=='reservas';$('editLat').value=Number.isFinite(e.coords[0]?.[0])?e.coords[0][0]:'';$('editLon').value=Number.isFinite(e.coords[0]?.[1])?e.coords[0][1]:'';const checked=F.validate(entries,settings).find(x=>x.id===id);const issues=checked.issues;$('editAdvice').hidden=!checked.advice?.length;$('editAdvice').textContent='Recomendação: '+(checked.advice||[]).join(' · ');$('editIssues').textContent=issues.length?issues.join(' · '):'Campos locais conferidos. Pronto para exportação.';updateEditorRules();$('editSource').textContent=e.source+' · '+(e.folder||'Sem pasta')+' · '+e.reason;openDialog('editorDialog')}
-$('editCategory').onchange=updateEditorRules;
-$('editorForm').onsubmit=e=>{e.preventDefault();const item=entries.find(x=>x.id===editorId);for(const [key,field]of Object.entries({name:'editName',category:'editCategory',type:'editType',level:'editLevel',template:'editTemplate',status:'editStatus',comments:'editComments',code:'editCode',box:'editBox',pole:'editPole',address:'editAddress',reserve:'editReserve',cable:'editCable'}))item[key]=$(field).value.trim();item.confirmed=$('editConfirmed').checked;item.excluded=$('editExcluded').checked;if(item.geometry==='Point')item.coords=[[$('editLat').value===''?NaN:Number($('editLat').value),$('editLon').value===''?NaN:Number($('editLon').value)]];$('editorDialog').close();render();drawMap();toast('Elemento atualizado.')};
-function download(content,name,type){const blob=content instanceof Blob?content:new Blob([content],{type:type||'text/csv;charset=utf-8'});const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),10000)}
-function exportData(){const validated=F.validate(entries,settings);return {validated,ready:validated.filter(e=>e.ready),pending:validated.filter(e=>!e.ready&&!e.excluded),excluded:validated.filter(e=>e.excluded)}}
-$('exportBtn').onclick=()=>{const {ready,pending,excluded}=exportData();const cats=Object.keys(F.SCHEMAS).filter(cat=>ready.some(e=>e.category===cat));$('exportSummary').innerHTML='<p class="export-total">'+ready.length+' prontos · '+pending.length+' pendentes · '+excluded.length+' excluídos.<br>Somente elementos prontos entram nos CSVs de importação.</p>'+cats.map(cat=>`<div class="export-item"><span>${cat}.csv</span><strong>${ready.filter(e=>e.category===cat).length} elementos</strong></div>`).join('')+(pending.length?'<div class="notice">Há pendências. Elas aparecem no relatório completo, mas não nos arquivos de importação.</div>':'');$('downloadBtn').disabled=ready.length===0;$('reportBtn').disabled=!entries.length;openDialog('exportDialog')};
-$('reportBtn').onclick=()=>download(F.report(F.validate(entries,settings)),'relatorio-revisao.csv');
-$('downloadBtn').onclick=async()=>{const button=$('downloadBtn');button.disabled=true;button.textContent='Preparando…';try{const {validated,ready,pending,excluded}=exportData();if(!ready.length)throw new Error('Nenhum elemento pronto.');const zip=new JSZip();for(const cat of Object.keys(F.SCHEMAS)){const group=ready.filter(e=>e.category===cat);if(group.length)zip.file(cat+'.csv',F.csv(F.SCHEMAS[cat],group.map(F.csvRow)))}zip.file('relatorio-revisao.csv',F.report(validated));zip.file('avisos-leitura.txt',warnings.join('\n')||'Nenhum aviso de leitura.');zip.file('LEIA-ME.txt',`FIBRA IMPORT — PREPARAÇÃO PARA OZMAP\n\n${ready.length} elementos prontos; ${pending.length} pendentes; ${excluded.length} excluídos.\n\n1. Confira os tipos, níveis, templates e tags cadastrados no seu OZmap.\n2. Importe postes; caixas, POPs e caixas de passagem; cabos e dutos; clientes e prospects; regiões; reservas técnicas.\n3. No menu Importar dados, escolha a categoria e seu CSV. Faça primeiro um teste em um projeto de teste.\n4. Configure a distância de associação e duplicidade no próprio OZmap. Não inferimos conexões por proximidade.\n\nFormato: UTF-8 sem BOM, separador vírgula, todos os campos entre aspas, decimal ponto. Coordenadas WGS84 em latitude;longitude, repetidas com vírgula nos campos points/polygon.\n\nOs tipos e níveis não são consultados no servidor OZmap. A classificação automática é uma sugestão com base na geometria, nomes, pastas e atributos. Elementos pendentes e excluídos estão apenas no relatório.\nFotos e anexos internos não são enviados nem convertidos. Reservas técnicas exigem metragem informada e usam a coordenada do ponto como poste. Não são geradas conexões ópticas, splitters, portas ou postes nos vértices dos cabos. A aplicação não faz a importação no OZmap.\n\nArquivos de origem: ${files.join(', ')}\n\nPadrões: ${JSON.stringify(settings,null,2)}\n\nReferência: https://ajuda.ozmap.com.br/pt-BR/support/solutions/articles/44001524646-tratamento-de-planilhas\n`);const blob=await zip.generateAsync({type:'blob',compression:'DEFLATE'});download(blob,'rede-ozmap-'+new Date().toISOString().slice(0,10)+'.zip','application/zip');$('step3').className='current';$('step2').className='done';toast('Pacote gerado. Importe os CSVs por categoria no OZmap.')}catch(e){toast('Falha ao exportar: '+e.message)}finally{button.disabled=false;button.textContent='⇩ Baixar pacote ZIP'}};
-$('demoBtn').onclick=async()=>{try{const response=await fetch('demo.kml');if(!response.ok)throw new Error('Arquivo de exemplo indisponível');const xml=await response.text();const f=new File([xml],'Rede demonstrativa — Candeias.kml',{type:'application/vnd.google-earth.kml+xml'});await readFiles([f]);toast('Demonstração fictícia. Configure tipo e nível dos cabos para exportar.')}catch(e){toast(e.message)}};
-window.addEventListener('beforeunload',e=>{if(entries.length){e.preventDefault();e.returnValue=''}});
+"use strict";
+const $ = (id) => document.getElementById(id),
+  F = Fibra;
+let entries = [],
+  warnings = [],
+  files = [],
+  settings = {
+    cableType: "",
+    cableLevel: "",
+    ductType: "",
+    boxLevel: "",
+    reviewed: false,
+  },
+  filter = "all",
+  page = 0,
+  selected = new Set(),
+  map,
+  layer,
+  editorId,
+  busy = false,
+  toastTimer;
+const colors = {
+  cabos: "#368869",
+  caixas: "#d09840",
+  postes: "#7487ad",
+  passagem: "#ac8058",
+  pops: "#496e4b",
+  clientes: "#809e57",
+  prospects: "#a47dac",
+  dutos: "#a8795a",
+  regioes: "#829c77",
+  reservas: "#b884b2",
+  unknown: "#b87872",
+};
+try {
+  settings = {
+    ...settings,
+    ...JSON.parse(localStorage.getItem("fibra-settings") || "{}"),
+  };
+} catch {}
+const esc = (s) =>
+  String(s ?? "").replace(
+    /[&<>"']/g,
+    (c) =>
+      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[
+        c
+      ],
+  );
+function toast(message) {
+  $("toast").textContent = message;
+  $("toast").classList.add("show");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => $("toast").classList.remove("show"), 5000);
+}
+function openDialog(id) {
+  $(id).showModal();
+}
+document
+  .querySelectorAll("[data-close]")
+  .forEach((b) => (b.onclick = () => b.closest("dialog").close()));
+document.querySelectorAll("dialog").forEach((d) =>
+  d.addEventListener("click", (e) => {
+    if (e.target === d) {
+      const r = d.getBoundingClientRect();
+      if (
+        e.clientX < r.left ||
+        e.clientX > r.right ||
+        e.clientY < r.top ||
+        e.clientY > r.bottom
+      )
+        d.close();
+    }
+  }),
+);
+$("helpBtn").onclick = $("navHelp").onclick = () => openDialog("helpDialog");
+function showSettings() {
+  for (const [id, key] of [
+    ["settingCableType", "cableType"],
+    ["settingCableLevel", "cableLevel"],
+    ["settingDuctType", "ductType"],
+    ["settingBoxLevel", "boxLevel"],
+  ])
+    $(id).value = settings[key];
+  $("settingReviewed").checked = settings.reviewed;
+  openDialog("settingsDialog");
+}
+$("navSettings").onclick = $("settingsInline").onclick = showSettings;
+$("saveSettings").onclick = () => {
+  settings = {
+    cableType: $("settingCableType").value.trim(),
+    cableLevel: $("settingCableLevel").value.trim(),
+    ductType: $("settingDuctType").value.trim(),
+    boxLevel: $("settingBoxLevel").value.trim(),
+    reviewed: $("settingReviewed").checked,
+  };
+  try {
+    localStorage.setItem("fibra-settings", JSON.stringify(settings));
+  } catch {}
+  $("settingsDialog").close();
+  render();
+  toast("Padrões salvos neste navegador.");
+};
+function options(select, all = false) {
+  select.innerHTML =
+    (all ? '<option value="all">Todos</option>' : "") +
+    Object.entries(F.CATEGORIES)
+      .map(([k, v]) => `<option value="${k}">${v}</option>`)
+      .join("");
+}
+options($("bulkCategory"));
+options($("editCategory"));
+async function readFiles(list) {
+  if (busy) return;
+  busy = true;
+  const added = [];
+  const newWarnings = [];
+  const names = [];
+  try {
+    for (const file of Array.from(list)) {
+      if (!/\.(kmz|kml)$/i.test(file.name)) {
+        newWarnings.push(
+          file.name + ": formato não suportado. Use KML ou KMZ.",
+        );
+        continue;
+      }
+      if (file.size > 25 * 1024 * 1024) {
+        newWarnings.push(file.name + ": excede o limite de 25 MB.");
+        continue;
+      }
+      try {
+        const docs = [];
+        if (/\.kmz$/i.test(file.name)) {
+          const zip = await JSZip.loadAsync(file);
+          const content = Object.values(zip.files).filter(
+            (e) => !e.dir && /\.kml$/i.test(e.name),
+          );
+          if (content.length === 0)
+            throw new Error("O KMZ não contém arquivos KML.");
+          if (content.length > 100)
+            throw new Error("Limite de 100 KMLs por KMZ.");
+          let total = 0;
+          for (const part of content) {
+            const size = part._data?.uncompressedSize;
+            if (
+              !Number.isFinite(size) ||
+              size > 50 * 1024 * 1024 ||
+              total + size > 50 * 1024 * 1024
+            )
+              throw new Error("O KMZ excede o limite de 50 MB descompactado.");
+            total += size;
+            const text = await part.async("string");
+            docs.push({ xml: text, source: file.name + " / " + part.name });
+          }
+          if (
+            Object.values(zip.files).some(
+              (e) => !e.dir && !/\.kml$/i.test(e.name),
+            )
+          )
+            newWarnings.push(
+              file.name + ": fotos e anexos internos não foram exportados.",
+            );
+        } else docs.push({ xml: await file.text(), source: file.name });
+        const current = [];
+        for (const doc of docs) {
+          const result = F.parseKML(doc.xml, doc.source);
+          current.push(...result.entries);
+          newWarnings.push(...result.warnings);
+        }
+        if (entries.length + added.length + current.length > 15000)
+          throw new Error("Limite de 15.000 elementos por conversão.");
+        added.push(...current);
+        names.push(file.name);
+        if (!current.length)
+          newWarnings.push(
+            file.name + ": nenhum elemento suportado encontrado.",
+          );
+      } catch (e) {
+        newWarnings.push(file.name + ": " + e.message);
+      }
+    }
+    if (added.length) {
+      const run =
+        Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+      added.forEach((e, i) => (e.id = run + "-" + i));
+      entries.push(...added);
+      files.push(...names);
+      warnings.push(...newWarnings);
+      filter = "all";
+      page = 0;
+      showReview();
+      render();
+      drawMap(true);
+      toast(
+        added.length +
+          " elementos carregados. Confira a classificação e os campos.",
+      );
+    } else {
+      warnings.push(...newWarnings);
+      toast(newWarnings[0] || "Nenhum elemento encontrado.");
+      if (entries.length) render();
+      else showUploadErrors(newWarnings);
+    }
+  } finally {
+    busy = false;
+    $("fileInput").value = "";
+  }
+}
+function showUploadErrors(items) {
+  let el = $("uploadErrors");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "uploadErrors";
+    el.className = "notice";
+    $("dropzone").after(el);
+  }
+  el.textContent = items.join("\n");
+}
+$("fileInput").onchange = (e) => readFiles(e.target.files);
+const drop = $("dropzone");
+drop.onkeydown = (e) => {
+  if (e.key === "Enter" || e.key === " ") {
+    e.preventDefault();
+    $("fileInput").click();
+  }
+};
+for (const ev of ["dragenter", "dragover"])
+  drop.addEventListener(ev, (e) => {
+    e.preventDefault();
+    drop.classList.add("drag");
+  });
+for (const ev of ["dragleave", "drop"])
+  drop.addEventListener(ev, (e) => {
+    e.preventDefault();
+    drop.classList.remove("drag");
+  });
+drop.addEventListener("drop", (e) => readFiles(e.dataTransfer.files));
+$("addBtn").onclick = () => $("fileInput").click();
+function reset() {
+  if (
+    entries.length &&
+    !confirm(
+      "Iniciar nova conversão? Baixe o pacote ou relatório antes de descartar esta sessão.",
+    )
+  )
+    return;
+  entries = [];
+  warnings = [];
+  files = [];
+  selected.clear();
+  $("reviewView").hidden = true;
+  $("uploadView").hidden = false;
+  $("step1").className = "current";
+  $("step2").className = "";
+  $("step3").className = "";
+  NetworkMap.clear();
+  $("search").value = "";
+  $("onlyPending").checked = false;
+  filter = "all";
+  page = 0;
+}
+$("newBtn").onclick = $("navImport").onclick = reset;
+function showReview() {
+  $("uploadView").hidden = true;
+  $("reviewView").hidden = false;
+  $("step1").className = "done";
+  $("step2").className = "current";
+  $("step3").className = "";
+  $("projectName").textContent =
+    files.length === 1
+      ? files[0].replace(/\.(kmz|kml)$/i, "")
+      : "Minha rede · " + files.length + " arquivos";
+  $("fileSummary").textContent = files.join(" · ");
+  updateFolders();
+}
+function updateFolders() {
+  const current = $("folderFilter").value;
+  $("folderFilter").innerHTML =
+    '<option value="">Todas as pastas</option>' +
+    Array.from(new Set(entries.map((e) => e.folder)))
+      .sort()
+      .map(
+        (f) =>
+          `<option value="${esc(f || "__root")}">${esc(f || "Sem pasta")}</option>`,
+      )
+      .join("");
+  $("folderFilter").value = current;
+}
+function visibleData() {
+  const search = F.norm($("search").value),
+    folder = $("folderFilter").value;
+  return F.validate(entries, settings).filter(
+    (e) =>
+      (filter === "all" || e.category === filter) &&
+      (!$("onlyPending").checked || (!e.ready && !e.excluded)) &&
+      (!folder || (e.folder || "__root") === folder) &&
+      (!search ||
+        F.norm(e.name + " " + e.folder + " " + e.source).includes(search)),
+  );
+}
+function render() {
+  if (!entries.length) return;
+  const data = F.validate(entries, settings),
+    ready = data.filter((e) => e.ready),
+    pending = data.filter((e) => !e.ready && !e.excluded),
+    counts = {};
+  for (const e of data) counts[e.category] = (counts[e.category] || 0) + 1;
+  const cableLength = data
+    .filter((e) => e.category === "cabos")
+    .reduce((a, e) => a + F.lengthMeters(e.coords), 0);
+  $("stats").innerHTML = [
+    ["all", "Elementos encontrados", data.length],
+    [
+      "cabos",
+      "Cabos · " +
+        (cableLength / 1000).toLocaleString("pt-BR", {
+          maximumFractionDigits: 2,
+        }) +
+        " km",
+      counts.cabos || 0,
+    ],
+    ["caixas", "Caixas", counts.caixas || 0],
+    ["postes", "Postes", counts.postes || 0],
+    ["pending", "Com pendências", pending.length],
+  ]
+    .map(
+      ([key, label, value]) =>
+        `<button class="stat" data-stat="${key}"><small>${label}</small><strong>${value}</strong></button>`,
+    )
+    .join("");
+  $("stats")
+    .querySelectorAll("button")
+    .forEach(
+      (b) =>
+        (b.onclick = () => {
+          filter = b.dataset.stat === "pending" ? "all" : b.dataset.stat;
+          $("onlyPending").checked = b.dataset.stat === "pending";
+          page = 0;
+          render();
+          $("tableCount").scrollIntoView({
+            behavior: "smooth",
+            block: "center",
+          });
+        }),
+    );
+  $("readyCount").innerHTML =
+    ready.length +
+    "<span> / " +
+    data.filter((e) => !e.excluded).length +
+    "</span>";
+  $("readyBar").style.width =
+    (100 * ready.length) / Math.max(1, data.filter((e) => !e.excluded).length) +
+    "%";
+  $("readyText").textContent = pending.length
+    ? pending.length +
+      " elementos precisam de ajustes. Clique na linha para revisar."
+    : "Tudo conferido nesta sessão. Revise os cadastros no seu OZmap.";
+  $("tableCount").textContent = data.length;
+  $("categoryTabs").innerHTML = [
+    ["all", "Todos", data.length],
+    ...Object.keys(F.CATEGORIES)
+      .filter((k) => counts[k])
+      .map((k) => [k, F.CATEGORIES[k], counts[k]]),
+  ]
+    .map(
+      ([key, label, n]) =>
+        `<button data-cat="${key}" class="${filter === key ? "active" : ""}">${label} <span>${n}</span></button>`,
+    )
+    .join("");
+  $("categoryTabs")
+    .querySelectorAll("button")
+    .forEach(
+      (b) =>
+        (b.onclick = () => {
+          filter = b.dataset.cat;
+          page = 0;
+          render();
+        }),
+    );
+  renderRows();
+  $("importWarnings").innerHTML = warnings.length
+    ? `<details><summary>${warnings.length} avisos de leitura · Ver detalhes</summary><ul>${warnings.map((w) => "<li>" + esc(w) + "</li>").join("")}</ul></details>`
+    : "";
+}
+function renderRows() {
+  const rows = visibleData();
+  page = Math.max(
+    0,
+    Math.min(page, Math.max(0, Math.ceil(rows.length / 40) - 1)),
+  );
+  const shown = rows.slice(page * 40, (page + 1) * 40);
+  $("rows").innerHTML = shown.length
+    ? shown
+        .map(
+          (e) =>
+            `<tr data-id="${esc(e.id)}"><td><input class="row-check" type="checkbox" ${selected.has(e.id) ? "checked" : ""} aria-label="Selecionar ${esc(e.name)}"></td><td><div class="element-name">${esc(e.name)}</div><div class="element-sub">${e.geometry === "Point" ? "Ponto" : e.geometry === "LineString" ? "Linha · " + Math.round(F.lengthMeters(e.coords)) + " m" : "Polígono"}${e.confirmed ? "" : " · conferir classificação"}</div></td><td><span class="badge" style="border-left:2px solid ${colors[e.category]}">${F.CATEGORIES[e.category]}</span></td><td class="cell-origin" title="${esc(e.source + " / " + e.folder)}">${esc(e.folder || e.source)}</td><td>${esc(e.type || "—")}<div class="element-sub">${esc(e.level || "—")}</div></td><td><span class="badge ${e.excluded ? "excluded" : e.ready ? "" : "pending"}" title="${esc([...e.issues, ...(e.advice || [])].join(" · "))}">${e.excluded ? "Excluído" : e.ready ? (e.advice?.length ? "✓ Pronto · conferir aviso" : "✓ Pronto") : "◷ " + e.issues.length + " pendência(s)"}</span></td><td><button class="text-button edit-row" aria-label="Editar ${esc(e.name)}">↗</button></td></tr>`,
+        )
+        .join("")
+    : '<tr><td colspan="7" class="no-data">Nenhum elemento neste filtro.</td></tr>';
+  $("rows")
+    .querySelectorAll("tr[data-id]")
+    .forEach((tr) => {
+      tr.onclick = (e) => {
+        if (e.target.closest(".row-check")) {
+          if (e.target.checked) selected.add(tr.dataset.id);
+          else selected.delete(tr.dataset.id);
+          updateSelected();
+          return;
+        }
+        openEditor(tr.dataset.id);
+      };
+    });
+  $("pageInfo").textContent = rows.length
+    ? `${page * 40 + 1}–${Math.min(rows.length, (page + 1) * 40)} de ${rows.length} elementos`
+    : "0 elementos";
+  $("prevPage").disabled = page === 0;
+  $("nextPage").disabled = (page + 1) * 40 >= rows.length;
+  $("selectAll").checked =
+    shown.length > 0 && shown.every((e) => selected.has(e.id));
+  updateSelected();
+}
+function updateSelected() {
+  const picked = entries.filter((entry) => selected.has(entry.id));
+  const excluded = picked.filter((entry) => entry.excluded).length;
+  const active = picked.length - excluded;
+  $("bulkCount").textContent = selected.size
+    ? `${selected.size} selecionado(s) · ${active} ativo(s) · ${excluded} excluído(s)`
+    : "Selecione itens para ações em lote";
+  $("bulkBtn").disabled = selected.size === 0;
+  $("excludeSelectedBtn").disabled = active === 0;
+  $("restoreSelectedBtn").disabled = excluded === 0;
+}
+$("selectAll").onchange = (e) => {
+  visibleData()
+    .slice(page * 40, (page + 1) * 40)
+    .forEach((row) => {
+      if (e.target.checked) selected.add(row.id);
+      else selected.delete(row.id);
+    });
+  renderRows();
+};
+$("prevPage").onclick = () => {
+  page--;
+  renderRows();
+};
+$("nextPage").onclick = () => {
+  page++;
+  renderRows();
+};
+$("search").oninput =
+  $("folderFilter").onchange =
+  $("onlyPending").onchange =
+    () => {
+      page = 0;
+      renderRows();
+    };
+$("pendingBtn").onclick = () => {
+  filter = "all";
+  $("onlyPending").checked = true;
+  page = 0;
+  render();
+  $("tableCount").scrollIntoView({ behavior: "smooth", block: "center" });
+};
+$("bulkBtn").onclick = () => {
+  const category = $("bulkCategory").value;
+  let total = 0,
+    skipped = 0;
+  entries.forEach((e) => {
+    if (!selected.has(e.id)) return;
+    const expected = ["cabos", "dutos"].includes(category)
+      ? "LineString"
+      : category === "regioes"
+        ? "Polygon"
+        : "Point";
+    if (category !== "unknown" && e.geometry !== expected) {
+      skipped++;
+      return;
+    }
+    e.category = category;
+    e.confirmed = category !== "unknown";
+    total++;
+  });
+  selected.clear();
+  render();
+  drawMap();
+  toast(
+    total +
+      " elementos classificados." +
+      (skipped ? " " + skipped + " ignorados por geometria incompatível." : ""),
+  );
+};
+$("excludeSelectedBtn").onclick = () => {
+  let total = 0;
+  entries.forEach((entry) => {
+    if (selected.has(entry.id) && !entry.excluded) {
+      entry.excluded = true;
+      total++;
+    }
+  });
+  render();
+  drawMap();
+  toast(
+    `${total} elemento(s) excluído(s) da exportação. Você pode restaurá-los nesta mesma seleção.`,
+  );
+};
+$("restoreSelectedBtn").onclick = () => {
+  let total = 0;
+  entries.forEach((entry) => {
+    if (selected.has(entry.id) && entry.excluded) {
+      entry.excluded = false;
+      total++;
+    }
+  });
+  render();
+  drawMap();
+  toast(`${total} elemento(s) restaurado(s) para exportação.`);
+};
+function drawMap(fit = false) {
+  NetworkMap.draw(entries, colors, openEditor, fit);
+}
+$("fitBtn").onclick = () => NetworkMap.fit();
+$("earthKmlBtn").onclick = () => {
+  const result = NetworkMap.toKML(entries);
+  if (!result.count) {
+    toast("Não há geometrias válidas para exportar.");
+    return;
+  }
+  download(
+    result.xml,
+    "rede-revisada.kml",
+    "application/vnd.google-earth.kml+xml;charset=utf-8",
+  );
+  toast(
+    "KML gerado com " +
+      result.count +
+      " elementos." +
+      (result.skipped
+        ? " " +
+          result.skipped +
+          " geometrias inválidas ou com ilhas foram omitidas."
+        : "") +
+      " Importe o arquivo no Google Earth.",
+  );
+};
+function openEditor(id) {
+  const e = entries.find((e) => e.id === id);
+  if (!e) return;
+  editorId = id;
+  $("editorTitle").textContent = e.name;
+  for (const [key, field] of Object.entries({
+    name: "editName",
+    category: "editCategory",
+    type: "editType",
+    level: "editLevel",
+    template: "editTemplate",
+    status: "editStatus",
+    comments: "editComments",
+    code: "editCode",
+    box: "editBox",
+    pole: "editPole",
+    address: "editAddress",
+    reserve: "editReserve",
+    cable: "editCable",
+  }))
+    $(field).value = e[key] || "";
+  $("editConfirmed").checked = e.confirmed;
+  $("editExcluded").checked = e.excluded;
+  $("pointFields").hidden = e.geometry !== "Point";
+  $("reserveFields").hidden = e.category !== "reservas";
+  $("editLat").value = Number.isFinite(e.coords[0]?.[0]) ? e.coords[0][0] : "";
+  $("editLon").value = Number.isFinite(e.coords[0]?.[1]) ? e.coords[0][1] : "";
+  const checked = F.validate(entries, settings).find((x) => x.id === id);
+  const issues = checked.issues;
+  $("editAdvice").hidden = !checked.advice?.length;
+  $("editAdvice").textContent =
+    "Recomendação: " + (checked.advice || []).join(" · ");
+  $("editIssues").textContent = issues.length
+    ? issues.join(" · ")
+    : "Campos locais conferidos. Pronto para exportação.";
+  updateEditorRules();
+  $("editSource").textContent =
+    e.source + " · " + (e.folder || "Sem pasta") + " · " + e.reason;
+  openDialog("editorDialog");
+}
+$("editCategory").onchange = updateEditorRules;
+$("editorForm").onsubmit = (e) => {
+  e.preventDefault();
+  const item = entries.find((x) => x.id === editorId);
+  for (const [key, field] of Object.entries({
+    name: "editName",
+    category: "editCategory",
+    type: "editType",
+    level: "editLevel",
+    template: "editTemplate",
+    status: "editStatus",
+    comments: "editComments",
+    code: "editCode",
+    box: "editBox",
+    pole: "editPole",
+    address: "editAddress",
+    reserve: "editReserve",
+    cable: "editCable",
+  }))
+    item[key] = $(field).value.trim();
+  item.confirmed = $("editConfirmed").checked;
+  item.excluded = $("editExcluded").checked;
+  if (item.geometry === "Point")
+    item.coords = [
+      [
+        $("editLat").value === "" ? NaN : Number($("editLat").value),
+        $("editLon").value === "" ? NaN : Number($("editLon").value),
+      ],
+    ];
+  $("editorDialog").close();
+  render();
+  drawMap();
+  toast("Elemento atualizado.");
+};
+function download(content, name, type) {
+  const blob =
+    content instanceof Blob
+      ? content
+      : new Blob([content], { type: type || "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob),
+    a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+function exportData() {
+  const validated = F.validate(entries, settings);
+  return {
+    validated,
+    ready: validated.filter((e) => e.ready),
+    pending: validated.filter((e) => !e.ready && !e.excluded),
+    excluded: validated.filter((e) => e.excluded),
+  };
+}
+$("exportBtn").onclick = () => {
+  const { ready, pending, excluded } = exportData();
+  const cats = Object.keys(F.SCHEMAS).filter((cat) =>
+    ready.some((e) => e.category === cat),
+  );
+  $("exportSummary").innerHTML =
+    '<p class="export-total">' +
+    ready.length +
+    " prontos · " +
+    pending.length +
+    " pendentes · " +
+    excluded.length +
+    " excluídos.<br>Somente elementos prontos entram nos CSVs de importação.</p>" +
+    cats
+      .map(
+        (cat) =>
+          `<div class="export-item"><span>${cat}.csv</span><strong>${ready.filter((e) => e.category === cat).length} elementos</strong></div>`,
+      )
+      .join("") +
+    (pending.length
+      ? '<div class="notice">Há pendências. Elas aparecem no relatório completo, mas não nos arquivos de importação.</div>'
+      : "");
+  $("downloadBtn").disabled = ready.length === 0;
+  $("reportBtn").disabled = !entries.length;
+  openDialog("exportDialog");
+};
+$("reportBtn").onclick = () =>
+  download(F.report(F.validate(entries, settings)), "relatorio-revisao.csv");
+$("downloadBtn").onclick = async () => {
+  const button = $("downloadBtn");
+  button.disabled = true;
+  button.textContent = "Preparando…";
+  try {
+    const { validated, ready, pending, excluded } = exportData();
+    if (!ready.length) throw new Error("Nenhum elemento pronto.");
+    const zip = new JSZip();
+    for (const cat of Object.keys(F.SCHEMAS)) {
+      const group = ready.filter((e) => e.category === cat);
+      if (group.length)
+        zip.file(cat + ".csv", F.csv(F.SCHEMAS[cat], group.map(F.csvRow)));
+    }
+    zip.file("relatorio-revisao.csv", F.report(validated));
+    zip.file(
+      "avisos-leitura.txt",
+      warnings.join("\n") || "Nenhum aviso de leitura.",
+    );
+    zip.file(
+      "LEIA-ME.txt",
+      `FIBRA IMPORT — PREPARAÇÃO PARA OZMAP\n\n${ready.length} elementos prontos; ${pending.length} pendentes; ${excluded.length} excluídos.\n\n1. Confira os tipos, níveis, templates e tags cadastrados no seu OZmap.\n2. Importe postes; caixas, POPs e caixas de passagem; cabos e dutos; clientes e prospects; regiões; reservas técnicas.\n3. No menu Importar dados, escolha a categoria e seu CSV. Faça primeiro um teste em um projeto de teste.\n4. Configure a distância de associação e duplicidade no próprio OZmap. Não inferimos conexões por proximidade.\n\nFormato: UTF-8 sem BOM, separador vírgula, todos os campos entre aspas, decimal ponto. Coordenadas WGS84 em latitude;longitude, repetidas com vírgula nos campos points/polygon.\n\nOs tipos e níveis não são consultados no servidor OZmap. A classificação automática é uma sugestão com base na geometria, nomes, pastas e atributos. Elementos pendentes e excluídos estão apenas no relatório.\nFotos e anexos internos não são enviados nem convertidos. Reservas técnicas exigem metragem informada e usam a coordenada do ponto como poste. Não são geradas conexões ópticas, splitters, portas ou postes nos vértices dos cabos. A aplicação não faz a importação no OZmap.\n\nArquivos de origem: ${files.join(", ")}\n\nPadrões: ${JSON.stringify(settings, null, 2)}\n\nReferência: https://ajuda.ozmap.com.br/pt-BR/support/solutions/articles/44001524646-tratamento-de-planilhas\n`,
+    );
+    const blob = await zip.generateAsync({
+      type: "blob",
+      compression: "DEFLATE",
+    });
+    download(
+      blob,
+      "rede-ozmap-" + new Date().toISOString().slice(0, 10) + ".zip",
+      "application/zip",
+    );
+    $("step3").className = "current";
+    $("step2").className = "done";
+    toast("Pacote gerado. Importe os CSVs por categoria no OZmap.");
+  } catch (e) {
+    toast("Falha ao exportar: " + e.message);
+  } finally {
+    button.disabled = false;
+    button.textContent = "⇩ Baixar pacote ZIP";
+  }
+};
+$("demoBtn").onclick = async () => {
+  try {
+    const response = await fetch("demo.kml");
+    if (!response.ok) throw new Error("Arquivo de exemplo indisponível");
+    const xml = await response.text();
+    const f = new File([xml], "Rede demonstrativa — Candeias.kml", {
+      type: "application/vnd.google-earth.kml+xml",
+    });
+    await readFiles([f]);
+    toast(
+      "Demonstração fictícia. Configure tipo e nível dos cabos para exportar.",
+    );
+  } catch (e) {
+    toast(e.message);
+  }
+};
+window.addEventListener("beforeunload", (e) => {
+  if (entries.length) {
+    e.preventDefault();
+    e.returnValue = "";
+  }
+});
 
-function updateEditorRules(){const category=$('editCategory').value,rule=F.IMPORT_RULES[category],line=['cabos','dutos'].includes(category),reserve=category==='reservas',client=category==='clientes';$('editName').required=false;$('nameRule').textContent=client?'Obrigatório se não houver código':reserve?'Identificação na revisão; não exportado':'Opcional · vazio gera nome no OZmap';for(const [id,field]of [['editType','type'],['editLevel','level']]){const mandatory=!!rule?.required.includes(field);const defaultValue=field==='type'?(category==='cabos'?settings.cableType:category==='dutos'?settings.ductType:''):(category==='cabos'?settings.cableLevel:category==='caixas'?settings.boxLevel:'');$(id).required=mandatory&&!defaultValue;$(id).placeholder=defaultValue?'Padrão: '+defaultValue:'Nome cadastrado no OZmap';$(field==='type'?'typeRule':'levelRule').textContent=mandatory?'Obrigatório no OZmap':'Opcional';$(field==='type'?'typeRule':'levelRule').classList.toggle('required-field',mandatory)}$('clientFields').hidden=!['clientes','prospects'].includes(category);$('reserveFields').hidden=!reserve;for(const field of ['editBox','editPole','editAddress'])$(field).closest('label').hidden=!client;$('editReserve').required=reserve;for(const id of ['latRule','lonRule'])$(id).textContent=client?'Condicional · dispensável com caixa, poste ou endereço':'Obrigatório para pontos sem referência de poste';$('editorRules').textContent=rule?('Obrigatórios: '+(rule.required.join(', ')||'ver condições')+'. '+rule.conditional.join(' ')+' '+(line?'O traçado vem do arquivo. ':'')+rule.defaults):'Selecione uma categoria para consultar as regras.';}
-function renderImportRules(){const category=$('rulesCategory').value,rule=F.IMPORT_RULES[category];if(!rule)return;const required=rule.required,conditional=rule.conditional,optional=F.SCHEMAS[category].filter(field=>!required.includes(field));$('rulesContent').innerHTML='<div class="rule-section"><h3>Obrigatórios</h3><p>'+esc(required.length?required.join(' · '):'Não há um campo sempre obrigatório: veja as condições abaixo.')+'</p></div>'+(conditional.length?'<div class="rule-section"><h3>Condições</h3><p>'+conditional.map(esc).join('<br>')+'</p></div>':'')+'<div class="rule-section"><h3>Opcionais ou condicionais exportados pela aplicação</h3><p>'+esc(optional.join(' · '))+'</p></div><div class="rule-section"><h3>Quando deixar em branco</h3><p>'+esc(rule.defaults)+'</p></div><div class="notice">'+esc(rule.note)+'</div>';}
-$('rulesCategory').innerHTML=Object.keys(F.IMPORT_RULES).map(category=>'<option value="'+category+'">'+F.CATEGORIES[category]+'</option>').join('');$('rulesCategory').onchange=renderImportRules;
-function showImportRules(category){if(F.IMPORT_RULES[category])$('rulesCategory').value=category;renderImportRules();$('rulesDialog').showModal()}
-$('rulesBtn').onclick=()=>showImportRules('cabos');$('settingsRulesBtn').onclick=()=>showImportRules('cabos');$('editorRulesBtn').onclick=()=>showImportRules($('editCategory').value);
+function updateEditorRules() {
+  const category = $("editCategory").value,
+    rule = F.IMPORT_RULES[category],
+    line = ["cabos", "dutos"].includes(category),
+    reserve = category === "reservas",
+    client = category === "clientes";
+  $("editName").required = false;
+  $("nameRule").textContent = client
+    ? "Obrigatório se não houver código"
+    : reserve
+      ? "Identificação na revisão; não exportado"
+      : "Opcional · vazio gera nome no OZmap";
+  for (const [id, field] of [
+    ["editType", "type"],
+    ["editLevel", "level"],
+  ]) {
+    const mandatory = !!rule?.required.includes(field);
+    const defaultValue =
+      field === "type"
+        ? category === "cabos"
+          ? settings.cableType
+          : category === "dutos"
+            ? settings.ductType
+            : ""
+        : category === "cabos"
+          ? settings.cableLevel
+          : category === "caixas"
+            ? settings.boxLevel
+            : "";
+    $(id).required = mandatory && !defaultValue;
+    $(id).placeholder = defaultValue
+      ? "Padrão: " + defaultValue
+      : "Nome cadastrado no OZmap";
+    $(field === "type" ? "typeRule" : "levelRule").textContent = mandatory
+      ? "Obrigatório no OZmap"
+      : "Opcional";
+    $(field === "type" ? "typeRule" : "levelRule").classList.toggle(
+      "required-field",
+      mandatory,
+    );
+  }
+  $("clientFields").hidden = !["clientes", "prospects"].includes(category);
+  $("reserveFields").hidden = !reserve;
+  for (const field of ["editBox", "editPole", "editAddress"])
+    $(field).closest("label").hidden = !client;
+  $("editReserve").required = reserve;
+  for (const id of ["latRule", "lonRule"])
+    $(id).textContent = client
+      ? "Condicional · dispensável com caixa, poste ou endereço"
+      : "Obrigatório para pontos sem referência de poste";
+  $("editorRules").textContent = rule
+    ? "Obrigatórios: " +
+      (rule.required.join(", ") || "ver condições") +
+      ". " +
+      rule.conditional.join(" ") +
+      " " +
+      (line ? "O traçado vem do arquivo. " : "") +
+      rule.defaults
+    : "Selecione uma categoria para consultar as regras.";
+}
+function renderImportRules() {
+  const category = $("rulesCategory").value,
+    rule = F.IMPORT_RULES[category];
+  if (!rule) return;
+  const required = rule.required,
+    conditional = rule.conditional,
+    optional = F.SCHEMAS[category].filter((field) => !required.includes(field));
+  $("rulesContent").innerHTML =
+    '<div class="rule-section"><h3>Obrigatórios</h3><p>' +
+    esc(
+      required.length
+        ? required.join(" · ")
+        : "Não há um campo sempre obrigatório: veja as condições abaixo.",
+    ) +
+    "</p></div>" +
+    (conditional.length
+      ? '<div class="rule-section"><h3>Condições</h3><p>' +
+        conditional.map(esc).join("<br>") +
+        "</p></div>"
+      : "") +
+    '<div class="rule-section"><h3>Opcionais ou condicionais exportados pela aplicação</h3><p>' +
+    esc(optional.join(" · ")) +
+    '</p></div><div class="rule-section"><h3>Quando deixar em branco</h3><p>' +
+    esc(rule.defaults) +
+    '</p></div><div class="notice">' +
+    esc(rule.note) +
+    "</div>";
+}
+$("rulesCategory").innerHTML = Object.keys(F.IMPORT_RULES)
+  .map(
+    (category) =>
+      '<option value="' +
+      category +
+      '">' +
+      F.CATEGORIES[category] +
+      "</option>",
+  )
+  .join("");
+$("rulesCategory").onchange = renderImportRules;
+function showImportRules(category) {
+  if (F.IMPORT_RULES[category]) $("rulesCategory").value = category;
+  renderImportRules();
+  $("rulesDialog").showModal();
+}
+$("rulesBtn").onclick = () => showImportRules("cabos");
+$("settingsRulesBtn").onclick = () => showImportRules("cabos");
+$("editorRulesBtn").onclick = () => showImportRules($("editCategory").value);
